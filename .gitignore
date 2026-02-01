@@ -1,0 +1,25 @@
+# Ignore Virtual Environments
+venv/
+.env
+
+# Ignore Python cache
+__pycache__/
+*.pyc
+
+# Ignore local config/secrets (Crucial for your SSM/Secrets work!)
+secrets.json
+*.pem
+.localstack/
+docker-compose.yml
+
+
+server.test.pem.crt
+server.test.pem.key
+machine.json
+view_logs
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
+
+
