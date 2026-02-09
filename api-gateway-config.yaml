@@ -1,0 +1,58 @@
+# Add to template.yaml under Resources:
+
+  # API Gateway
+  OrderApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: !Ref Environment
+      Auth:
+        DefaultAuthorizer: LambdaTokenAuthorizer
+        Authorizers:
+          LambdaTokenAuthorizer:
+            FunctionArn: !GetAtt AuthorizerLambda.Arn
+      Cors:
+        AllowMethods: "'POST, GET, OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization'"
+        AllowOrigin: "'*'"
+
+  # API Lambda - Submit Order
+  SubmitOrderLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'api-submit-order-${Environment}'
+      CodeUri: ./
+      Handler: lambdas.api_lambda.submit_order
+      Environment:
+        Variables:
+          TASK_QUEUE_URL: !Ref TaskQueue
+      Policies:
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt TaskQueue.QueueName
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref OrderApi
+            Path: /orders
+            Method: POST
+
+  # Authorizer Lambda
+  AuthorizerLambda:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub 'api-authorizer-${Environment}'
+      CodeUri: ./
+      Handler: lambdas.authorizer_lambda.lambda_handler
+      Environment:
+        Variables:
+          JWT_SECRET: !Sub '{{resolve:secretsmanager:${JWTSecret}:SecretString:secret}}'
+
+  # JWT Secret in Secrets Manager
+  JWTSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub 'jwt-secret-${Environment}'
+      GenerateSecretString:
+        SecretStringTemplate: '{}'
+        GenerateStringKey: 'secret'
+        PasswordLength: 32

@@ -1,0 +1,95 @@
+# Add to template.yaml under Resources:
+
+  # CloudWatch Log Groups (with retention)
+  TaskLambdaLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/task-processor-${Environment}'
+      RetentionInDays: 30
+
+  # CloudWatch Alarms
+  TaskLambdaErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'task-lambda-errors-${Environment}'
+      AlarmDescription: 'Alert when task lambda has errors'
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanThreshold
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref TaskLambda
+      AlarmActions:
+        - !Ref AlertTopic
+
+  DLQDepthAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'dlq-depth-${Environment}'
+      AlarmDescription: 'Alert when DLQ has messages'
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt TaskDLQ.QueueName
+      AlarmActions:
+        - !Ref AlertTopic
+
+  # SNS Topic for Alerts
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub 'order-processing-alerts-${Environment}'
+      Subscription:
+        - Endpoint: your-email@example.com  # Replace with your email
+          Protocol: email
+
+  # X-Ray Tracing (add to Globals.Function)
+  # Tracing: Active
+
+  # CloudWatch Dashboard
+  MonitoringDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub 'OrderProcessing-${Environment}'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "properties": {
+                "metrics": [
+                  ["AWS/Lambda", "Invocations", {"stat": "Sum", "label": "Task Lambda"}],
+                  [".", "Errors", {"stat": "Sum"}],
+                  [".", "Duration", {"stat": "Average"}]
+                ],
+                "period": 300,
+                "stat": "Average",
+                "region": "${AWS::Region}",
+                "title": "Lambda Metrics"
+              }
+            },
+            {
+              "type": "metric",
+              "properties": {
+                "metrics": [
+                  ["AWS/SQS", "ApproximateNumberOfMessagesVisible", {"label": "Task Queue"}],
+                  ["...", {"label": "DLQ"}]
+                ],
+                "period": 300,
+                "stat": "Average",
+                "region": "${AWS::Region}",
+                "title": "Queue Depth"
+              }
+            }
+          ]
+        }
