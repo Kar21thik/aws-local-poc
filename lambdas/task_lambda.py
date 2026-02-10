@@ -11,7 +11,7 @@ logger.setLevel(logging.INFO)
 from app.processors import calculate_order_total, apply_discount, build_invoice
 from app.storage import save_to_s3
 from app.notifier import send_notification
-from app.auth import validate_token
+from app.helpers.discount_calculator import calculate_bulk_discount, calculate_tax
 
 
 BUCKET = "results-bucket"
@@ -31,23 +31,12 @@ def lambda_handler(event, context):
         correlation_id = "N/A"
         try:
             body = json.loads(record["body"])
-            
-            # STEP 0: Validate JWT Token
-            auth_token = body.get("auth_token")
-            user_id = validate_token(auth_token)
-            
-            if not user_id:
-                logger.error("🚨 SECURITY ALERT: Invalid or missing token")
-                raise Exception("Unauthorized - Invalid token")
-            
-            logger.info(f"✅ Token validated for user: {user_id}")
-            
             order_id = body.get("order_id")
             correlation_id = body.get("correlation_id", "N/A")
             items = body.get("items", [])
             promo_code = body.get("promo_code", "")
             
-            logger.info(f"\n📦 ORDER: {order_id} | User: {user_id} | Correlation: {correlation_id}")
+            logger.info(f"\n📦 ORDER: {order_id} | Correlation: {correlation_id}")
             logger.info(f"   Items: {len(items)} | Promo: {promo_code or 'None'}")
             
             # Validate items (reject negative values - DLQ will fix them)
@@ -64,11 +53,20 @@ def lambda_handler(event, context):
             final_total, discount_amount = apply_discount(subtotal, promo_code)
             logger.info(f"   Discount: ${discount_amount} | Final: ${final_total}")
             
+            # TEST: Use nested folder function
+            logger.info(f"\n→ Step 2.5: calculate_bulk_discount() [NESTED FOLDER TEST]")
+            bulk_discount = calculate_bulk_discount(subtotal)
+            tax = calculate_tax(final_total)
+            logger.info(f"   🧪 Bulk Discount: ${bulk_discount:.2f}")
+            logger.info(f"   🧪 Tax: ${tax:.2f}")
+            logger.info(f"   ✅ NESTED IMPORT WORKS!")
+            
             # Build invoice
             logger.info(f"\n→ Step 3: build_invoice()")
             invoice = build_invoice(order_id, items, subtotal, discount_amount, final_total, promo_code)
             invoice["correlation_id"] = correlation_id
-            invoice["user_id"] = user_id
+            invoice["bulk_discount"] = bulk_discount
+            invoice["tax"] = tax
             logger.info(f"   ✅ Invoice created")
 
             # Save to S3

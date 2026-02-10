@@ -39,15 +39,7 @@ def generate_token(user_id: str = "test-user"):
     return {"access_token": token, "token_type": "bearer"}
 
 @app.post("/orders")
-def submit_order(order: dict, credentials: HTTPAuthorizationCredentials = Security(security)):
-    # Verify JWT
-    token = credentials.credentials
-    result = verify_token(token)
-    if not result["valid"]:
-        raise HTTPException(status_code=401, detail=result.get("error", "Invalid token"))
-    
-    user_id = result["user_id"]
-    
+def submit_order(order: dict, user_id: str = Depends(verify_jwt)):
     try:
         order_obj = Order(**order)
         order_obj.validate()
@@ -62,8 +54,7 @@ def submit_order(order: dict, credentials: HTTPAuthorizationCredentials = Securi
         "order_id": order_id,
         "items": order["items"],
         "promo_code": order.get("promo_code"),
-        "user_id": user_id,
-        "auth_token": token  # Pass token to Lambda
+        "user_id": user_id
     }
     
     queue_url = get_queue_url()
