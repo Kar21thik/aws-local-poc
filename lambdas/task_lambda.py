@@ -7,24 +7,31 @@ import logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+logger.info("📦 IMPORTING MODULES...")
+
 # Import functions
 from app.processors import calculate_order_total, apply_discount, build_invoice
+
+
 from app.storage import save_to_s3
+
 from app.notifier import send_notification
+
 from app.helpers.discount_calculator import calculate_bulk_discount, calculate_tax
 
+from app.parameter_store import get_cached_parameter
 
-BUCKET = "results-bucket"
-QUEUE_NAME = "notification-queue"
+from app.database import save_order
 
-# Construct SQS URL dynamically
-endpoint = os.environ.get("AWS_ENDPOINT_URL", "http://localhost:4566").rstrip("/")
-NOTIFICATION_QUEUE_URL = f"{endpoint}/000000000000/{QUEUE_NAME}"
 
 def lambda_handler(event, context):
     logger.info("\n" + "="*70)
     logger.info("🚀 TASK LAMBDA INVOKED")
     logger.info("="*70)
+    
+    # Get values from Parameter Store
+    BUCKET = get_cached_parameter("poc-results-bucket-name")
+    NOTIFICATION_QUEUE_URL = get_cached_parameter("poc-notification-queue-url")
     
     for record in event.get("Records", []):
         order_id = "Unknown"
@@ -54,12 +61,15 @@ def lambda_handler(event, context):
             logger.info(f"   Discount: ${discount_amount} | Final: ${final_total}")
             
             # TEST: Use nested folder function
-            logger.info(f"\n→ Step 2.5: calculate_bulk_discount() [NESTED FOLDER TEST]")
+            logger.info(f"\n➡️ Step 2.5: TESTING NESTED MODULE ACCESS")
+            logger.info(f"   📂 Calling: app/helpers/discount_calculator.py")
+            logger.info(f"   📂 Module path: app.helpers.discount_calculator")
+            
             bulk_discount = calculate_bulk_discount(subtotal)
             tax = calculate_tax(final_total)
-            logger.info(f"   🧪 Bulk Discount: ${bulk_discount:.2f}")
-            logger.info(f"   🧪 Tax: ${tax:.2f}")
-            logger.info(f"   ✅ NESTED IMPORT WORKS!")
+            
+            logger.info(f"   ✅ NESTED MODULE ACCESS SUCCESSFUL!")
+            logger.info(f"   📊 Results: Bulk Discount=${bulk_discount:.2f}, Tax=${tax:.2f}")
             
             # Build invoice
             logger.info(f"\n→ Step 3: build_invoice()")
@@ -74,8 +84,22 @@ def lambda_handler(event, context):
             key = f"{order_id}.json"
             save_to_s3(BUCKET, key, invoice)
 
+            # Save to DynamoDB
+            logger.info(f"\n→ Step 5: save_order() to DynamoDB")
+            save_order(
+                order_id=order_id,
+                status="COMPLETED",
+                subtotal=subtotal,
+                discount_amount=discount_amount,
+                final_total=final_total,
+                items=items,
+                promo_code=promo_code,
+                recovered=False
+            )
+            logger.info(f"   ✅ Order saved to DynamoDB")
+
             # Send notification
-            logger.info(f"\n→ Step 5: send_notification()")
+            logger.info(f"\n→ Step 6: send_notification()")
             send_notification(NOTIFICATION_QUEUE_URL, {
                 "order_id": order_id,
                 "correlation_id": correlation_id,
@@ -96,3 +120,8 @@ def lambda_handler(event, context):
     return {"status": "success"}
 
 
+
+
+# evry req -> track send notify for req -> if failed -> DLQ and notify (only failed messages) notifcation and status is important -> 
+# 3rd party api checking it whether it is giving the response 
+# create a script dynamically the resources and create a generic wrapper on it (EMPTY THE QUEUE OR DATA BASE)

@@ -1,70 +1,40 @@
-"""
-DynamoDB operations for order tracking
-"""
-
-import os
-import time
-from decimal import Decimal
+import json
+from datetime import datetime
 from app.config import get_aws_client
+from app.parameter_store import get_cached_parameter
 
-ORDERS_TABLE = os.environ.get("ORDERS_TABLE", "orders-dev")
-
-def save_order_status(order_id, status, user_id=None, items=None, total=None, metadata=None):
-    """
-    Save or update order status in DynamoDB
-    """
+def save_order(order_id, status, subtotal, discount_amount, final_total, items, promo_code="", recovered=False):
+    """Save order to DynamoDB"""
     dynamodb = get_aws_client("dynamodb")
-    
-    item = {
-        "order_id": {"S": order_id},
-        "status": {"S": status},
-        "updated_at": {"N": str(int(time.time()))}
-    }
-    
-    if user_id:
-        item["user_id"] = {"S": user_id}
-        item["created_at"] = {"N": str(int(time.time()))}
-    
-    if items:
-        item["item_count"] = {"N": str(len(items))}
-    
-    if total:
-        item["total"] = {"N": str(Decimal(str(total)))}
-    
-    if metadata:
-        item["metadata"] = {"S": str(metadata)}
+    table_name = get_cached_parameter("poc-orders-table-name")
     
     dynamodb.put_item(
-        TableName=ORDERS_TABLE,
-        Item=item
+        TableName=table_name,
+        Item={
+            "order_id": {"S": order_id},
+            "status": {"S": status},
+            "timestamp": {"S": datetime.utcnow().isoformat()},
+            "subtotal": {"N": str(subtotal)},
+            "discount_amount": {"N": str(discount_amount)},
+            "final_total": {"N": str(final_total)},
+            "promo_code": {"S": promo_code},
+            "items_json": {"S": json.dumps(items)},
+            "recovered_from_dlq": {"BOOL": recovered}
+        }
     )
 
-def get_order(order_id):
-    """
-    Retrieve order from DynamoDB
-    """
+def update_order_status(order_id, status, recovered=False):
+    """Update order status in DynamoDB"""
     dynamodb = get_aws_client("dynamodb")
+    table_name = get_cached_parameter("poc-orders-table-name")
     
-    response = dynamodb.get_item(
-        TableName=ORDERS_TABLE,
-        Key={"order_id": {"S": order_id}}
+    dynamodb.update_item(
+        TableName=table_name,
+        Key={"order_id": {"S": order_id}},
+        UpdateExpression="SET #status = :status, recovered_from_dlq = :recovered",
+        ExpressionAttributeNames={"#status": "status"},
+        ExpressionAttributeValues={
+            ":status": {"S": status},
+            ":recovered": {"BOOL": recovered}
+        }
     )
-    
-    return response.get("Item")
-
-def get_user_orders(user_id, limit=20):
-    """
-    Get all orders for a user
-    """
-    dynamodb = get_aws_client("dynamodb")
-    
-    response = dynamodb.query(
-        TableName=ORDERS_TABLE,
-        IndexName="user-orders-index",
-        KeyConditionExpression="user_id = :uid",
-        ExpressionAttributeValues={":uid": {"S": user_id}},
-        Limit=limit,
-        ScanIndexForward=False  # Most recent first
-    )
-    
-    return response.get("Items", [])

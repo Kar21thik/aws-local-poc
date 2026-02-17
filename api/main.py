@@ -8,19 +8,18 @@ import os
 from typing import List
 from api.auth import create_token, verify_token
 from api.models import Order
+from app.parameter_store import get_cached_parameter
 
 app = FastAPI(title="Order Processing API", version="1.0.0")
 security = HTTPBearer()
 
 ENDPOINT_URL = os.getenv("AWS_ENDPOINT_URL", "http://localhost:4566")
 REGION = os.getenv("AWS_REGION", "us-east-1")
-TASK_QUEUE_NAME = "task-queue"
-DLQ_NAME = "task-dlq"
 
 sqs = boto3.client("sqs", endpoint_url=ENDPOINT_URL, region_name=REGION)
 
-def get_queue_url(queue_name=TASK_QUEUE_NAME):
-    return sqs.get_queue_url(QueueName=queue_name)['QueueUrl']
+def get_queue_url_from_params(param_name):
+    return get_cached_parameter(param_name)
 
 def verify_jwt(credentials: HTTPAuthorizationCredentials = Security(security)):
     token = credentials.credentials
@@ -57,7 +56,7 @@ def submit_order(order: dict, user_id: str = Depends(verify_jwt)):
         "user_id": user_id
     }
     
-    queue_url = get_queue_url()
+    queue_url = get_queue_url_from_params("poc-task-queue-url")
     sqs.send_message(QueueUrl=queue_url, MessageBody=json.dumps(message))
     
     return {
@@ -74,42 +73,44 @@ def submit_batch_orders(orders: List[dict], user_id: str = Depends(verify_jwt)):
         try:
             order_obj = Order(**order)
             order_obj.validate()
+            
+            correlation_id = str(uuid.uuid4())
+            order_id = f"ORD-{int(uuid.uuid4().time_low)}"
+            
+            message = {
+                "correlation_id": correlation_id,
+                "order_id": order_id,
+                "items": order["items"],
+                "promo_code": order.get("promo_code"),
+                "user_id": user_id
+            }
+            
+            queue_url = get_queue_url_from_params("poc-task-queue-url")
+            sqs.send_message(QueueUrl=queue_url, MessageBody=json.dumps(message))
+            
+            results.append({
+                "status": "submitted",
+                "order_id": order_id,
+                "correlation_id": correlation_id
+            })
+            
         except (TypeError, ValueError) as e:
             results.append({"status": "failed", "error": str(e)})
-            continue
-        
-        correlation_id = str(uuid.uuid4())
-        order_id = f"ORD-{int(uuid.uuid4().time_low)}"
-        
-        message = {
-            "correlation_id": correlation_id,
-            "order_id": order_id,
-            "items": order["items"],
-            "promo_code": order.get("promo_code"),
-            "user_id": user_id
-        }
-        
-        queue_url = get_queue_url()
-        sqs.send_message(QueueUrl=queue_url, MessageBody=json.dumps(message))
-        
-        results.append({
-            "status": "submitted",
-            "order_id": order_id,
-            "correlation_id": correlation_id
-        })
+        except Exception as e:
+            results.append({"status": "failed", "error": f"SQS error: {str(e)}"})
     
     return {"total": len(orders), "results": results}
 
 @app.get("/dlq/stats")
 def get_dlq_stats(user_id: str = Depends(verify_jwt)):
     try:
-        dlq_url = get_queue_url(DLQ_NAME)
+        dlq_url = get_queue_url_from_params("poc-dlq-queue-url")
         attrs = sqs.get_queue_attributes(
             QueueUrl=dlq_url,
             AttributeNames=['ApproximateNumberOfMessages', 'ApproximateNumberOfMessagesNotVisible']
         )
         return {
-            "queue": DLQ_NAME,
+            "queue": "task-dlq",
             "messages_available": int(attrs['Attributes'].get('ApproximateNumberOfMessages', 0)),
             "messages_in_flight": int(attrs['Attributes'].get('ApproximateNumberOfMessagesNotVisible', 0))
         }
@@ -119,7 +120,7 @@ def get_dlq_stats(user_id: str = Depends(verify_jwt)):
 @app.get("/dlq/messages")
 def get_dlq_messages(user_id: str = Depends(verify_jwt)):
     try:
-        dlq_url = get_queue_url(DLQ_NAME)
+        dlq_url = get_queue_url_from_params("poc-dlq-queue-url")
         response = sqs.receive_message(
             QueueUrl=dlq_url,
             MaxNumberOfMessages=10,

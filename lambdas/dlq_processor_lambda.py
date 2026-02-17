@@ -8,13 +8,9 @@ logger.setLevel(logging.INFO)
 from app.processors import calculate_order_total, apply_discount, build_invoice
 from app.storage import save_to_s3
 from app.notifier import send_notification
-
-BUCKET = "results-bucket"
-QUEUE_NAME = "notification-queue"
-
-endpoint = os.environ.get("AWS_ENDPOINT_URL", "http://localhost:4566").rstrip("/")
-NOTIFICATION_QUEUE_URL = f"{endpoint}/000000000000/{QUEUE_NAME}"
-TASK_QUEUE_URL = f"{endpoint}/000000000000/task-queue"
+from app.parameter_store import get_cached_parameter
+from app.database import save_order, update_order_status
+from app.database import update_order_status
 
 def fix_order_data(body):
     """Attempt to fix common order issues"""
@@ -44,6 +40,20 @@ def fix_order_data(body):
 def lambda_handler(event, context):
     logger.info("\n" + "="*70)
     logger.info("🔄 DLQ PROCESSOR LAMBDA INVOKED")
+    logger.info("="*70)
+    
+    # Get values from Parameter Store
+    BUCKET = get_cached_parameter("poc-results-bucket-name")
+    NOTIFICATION_QUEUE_URL = get_cached_parameter("poc-notification-queue-url")
+    
+    # Track DLQ statistics
+    total_messages = len(event.get("Records", []))
+    processed_count = 0
+    recovered_count = 0
+    failed_count = 0
+    
+    logger.info(f"\n📊 DLQ BATCH INFO:")
+    logger.info(f"   Total messages received: {total_messages}")
     logger.info("="*70)
     
     for record in event.get("Records", []):
@@ -96,8 +106,22 @@ def lambda_handler(event, context):
             key = f"{order_id}.json"
             save_to_s3(BUCKET, key, invoice)
 
+            # Save to DynamoDB with RECOVERED status
+            logger.info(f"\n→ Step 5: save_order() to DynamoDB")
+            save_order(
+                order_id=order_id,
+                status="RECOVERED",
+                subtotal=subtotal,
+                discount_amount=discount_amount,
+                final_total=final_total,
+                items=items,
+                promo_code=promo_code,
+                recovered=True
+            )
+            logger.info(f"   ✅ Order saved to DynamoDB with RECOVERED status")
+
             # Send notification
-            logger.info(f"\n→ Step 5: send_notification()")
+            logger.info(f"\n→ Step 6: send_notification()")
             send_notification(NOTIFICATION_QUEUE_URL, {
                 "order_id": order_id,
                 "correlation_id": correlation_id,
@@ -107,11 +131,35 @@ def lambda_handler(event, context):
                 "fixes_applied": issues
             })
             
+            # Update DynamoDB status
+            logger.info(f"\n→ Step 6: update_order_status() in DynamoDB")
+            update_order_status(order_id, status="RECOVERED", recovered=True)
+            logger.info(f"   ✅ Order status updated to RECOVERED")
+            
             logger.info(f"\n✅ ORDER {order_id} RECOVERED AND COMPLETED")
             logger.info("="*70 + "\n")
+            processed_count += 1
+            recovered_count += 1
             
         except Exception as e:
             logger.error(f"\n❌ ERROR processing DLQ message for {order_id}: {str(e)}")
             logger.info("="*70 + "\n")
+            processed_count += 1
+            failed_count += 1
 
-    return {"status": "dlq_processed"}
+    # Final DLQ Summary
+    logger.info("\n" + "="*70)
+    logger.info("📈 DLQ PROCESSING SUMMARY")
+    logger.info("="*70)
+    logger.info(f"   Total messages in batch: {total_messages}")
+    logger.info(f"   ✅ Successfully recovered: {recovered_count}")
+    logger.info(f"   ❌ Failed to recover: {failed_count}")
+    logger.info(f"   📊 Success rate: {(recovered_count/total_messages*100):.1f}%" if total_messages > 0 else "   📊 Success rate: N/A")
+    logger.info("="*70 + "\n")
+
+    return {
+        "status": "dlq_processed",
+        "total_messages": total_messages,
+        "recovered": recovered_count,
+        "failed": failed_count
+    }
